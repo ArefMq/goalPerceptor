@@ -1,8 +1,8 @@
 /**
 * @file GoalPerceptor.cpp
-* @author Michel Bartsch
-* @author Thomas Münder
-* @author Aref Moqadam
+* @author Michel Bartsch - B-Human Member
+* @author Thomas Münder - B-Human Member
+* @author Aref Moqadam - MRL-SPL Member
 */
 
 #include "GoalPerceptor.h"
