@@ -88,8 +88,8 @@ void GoalPerceptor::scanFieldBoundarySpots()
 
   for (int x=0; x<theImage.width-1; x+=2)
   {
-    int y;
-    if (isWhite(x, y=boundaryStepGenerator(x)))
+    int y=boundaryStepGenerator(x);
+    if (y>0 && y<theImage.height && isWhite(x, y))
     {
       Y = theImage[y][x].y;
       Cb = theImage[y][x].cb;
