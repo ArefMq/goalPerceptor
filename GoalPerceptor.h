@@ -1,10 +1,9 @@
 /**
-* @file GoalPerceptor.h
-* @ author Michel Bartsch - B-Human Member
-* @ author Thomas Münder - B-Human Member
-* @author Aref Moqadam - MRL-SPL Member
+* @file GoalPerceptor.cpp
+* @author <a href="mailto:a.moqadammehr@mrl-spl.ir">Aref Moqadam</a> - MRL-SPL Member
+* @author Michel Bartsch - B-Human Member
+* @author Thomas Münder - B-Human Member
 */
-
 #pragma once
 
 #include "Tools/Math/Geometry.h"
@@ -21,9 +20,6 @@
 #include "Tools/Debugging/DebugDrawings.h"
 #include "Representations/Perception/ColorReference.h"
 
-#define MERGING_MARGIN 1000 //-- mm
-#define COLOR_DIFFRENCE_VALUE 500
-
 MODULE(GoalPerceptor)
   REQUIRES(CameraMatrix)
   REQUIRES(ImageCoordinateSystem)
@@ -37,6 +33,8 @@ MODULE(GoalPerceptor)
   PROVIDES_WITH_MODIFY_AND_DRAW(GoalPercept)
   LOADS_PARAMETER(int, quality)
   LOADS_PARAMETER(int, yellowSkipping)
+  LOADS_PARAMETER(int, mergingMargin)
+  LOADS_PARAMETER(int, colorDifferenceValue)
 END_MODULE
 
 /**
@@ -71,6 +69,16 @@ private:
     float validity;
   };
 
+  // [TODO] : find a better class to use instead of this one. Or at least move it to somewhere else.
+  class Point
+  {
+  public:
+    Point(int X=0, int Y=0) : x(X), y(Y) {}
+    int x, y;
+
+    bool operator < (const Point& other) const { return this->x < other.x; }
+  };
+
   void update(GoalPercept& percept);
 
   void findSpots(const int& height);
@@ -81,11 +89,15 @@ private:
 
   bool isWhite(const int& x, const int& y);
 
-  bool isInGrad(const int& x, const int& y, float& grad);
+  bool isInGrad(const int& x, const int& y);
 
-  bool isInGrad(int x, int y, unsigned char& Y, unsigned char& Cr, unsigned char& Cb, float&grad);
+  bool isInGrad(int x, int y, unsigned char& Y, unsigned char& Cr, unsigned char& Cb);
 
   void calculatePosition(const int& height);
+
+  std::vector<Point> trimData(const std::vector<Point>& input);
+
+  float PearsonCorrelation(const std::vector<Point>& input);
 
   void validate();
 
@@ -95,9 +107,11 @@ private:
 
   void bottomCorrector();
 
+  void checkVerticalShape();
+
   int boundaryStepGenerator(int x);
 
-  void scanFieldBoundarySpots();
+  void scanFieldBoundarySpots(const int& height);
 
   std::list<Spot> spots;
 

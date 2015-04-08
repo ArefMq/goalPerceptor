@@ -1,8 +1,8 @@
 /**
 * @file GoalPerceptor.cpp
+* @author <a href="mailto:a.moqadammehr@mrl-spl.ir">Aref Moqadam</a> - MRL-SPL Member
 * @author Michel Bartsch - B-Human Member
 * @author Thomas Münder - B-Human Member
-* @author Aref Moqadam - MRL-SPL Member
 */
 
 #include "GoalPerceptor.h"
@@ -14,35 +14,53 @@ void GoalPerceptor::update(GoalPercept& percept)
   DECLARE_DEBUG_DRAWING("module:GoalPerceptor:Scans", "drawingOnImage");
   DECLARE_DEBUG_DRAWING("module:GoalPerceptor:Validation", "drawingOnImage");
   DECLARE_DEBUG_DRAWING("module:GoalPerceptor:removals", "drawingOnImage");
-  DECLARE_DEBUG_DRAWING("abol", "drawingOnImage");
+  DECLARE_DEBUG_DRAWING("module:GoalPerceptor:Candidates", "drawingOnImage");
+  DECLARE_DEBUG_DRAWING("module:GoalPerceptor:MidPoints", "drawingOnImage");
+  DECLARE_DEBUG_DRAWING("module:GoalPerceptor:ShapeScans", "drawingOnImage");
 
-  // [FIXME] add body countour to remove the lower tof.
-  if (theCameraInfo.camera == CameraInfo::lower) return; // this is a tof for ignoring lower camer. because some part of body would be detected as the goal post.
+  MODIFY("module:GoalPerceptor:quality", quality);
+  MODIFY("module:GoalPerceptor:mergingMargin", mergingMargin);
+  MODIFY("module:GoalPerceptor:colorDifference", colorDifferenceValue);
+
+  // [FIXME] add body contour in order to remove the below line.
+  // this is a dirty hack for ignoring lower camera. because some part of body would be detected as the goal post.
+  percept.goalPosts.clear();
+  if (theCameraInfo.camera == CameraInfo::lower) return;
 
   //clear old data
   spots.clear();
-  percept.goalPosts.clear();
 
   if(!theCameraMatrix.isValid)
-  {
     return;
-  }
 
   int scanHeight = std::max(1, (int)theImageCoordinateSystem.origin.y);
   scanHeight = std::min(scanHeight, theImage.height-2);
   LINE("module:GoalPerceptor:Spots", 1, scanHeight, theImage.width-1, scanHeight, 1, Drawings::ps_dash, ColorClasses::orange);
 
   // find goal spots
-  findSpots(scanHeight);
-  scanFieldBoundarySpots(); //-- This added by aref
+//  findSpots(scanHeight);
+  scanFieldBoundarySpots(scanHeight);
 
   // process goal spots
+//  // [TODO] : here, there is a duplication on calculations
+//  checkVerticalShape();
   verticalColorScanDown();
   verticalColorScanUp();
-  bottomCorrector(); //-- This added by aref
+
+  //-- Clip boundaries
+  for (Spot& s : spots)
+  {
+    if (s.base.x < s.start)
+      s.base.x = s.start;
+    if (s.top.x > s.end)
+      s.top.x = s.end;
+  }
+
+  bottomCorrector();
+
   calculatePosition(scanHeight);
   validate();
-  frameCheck(); //-- This added by aref
+  frameCheck();
 
   posting(percept);
 }
@@ -50,7 +68,7 @@ void GoalPerceptor::update(GoalPercept& percept)
 int GoalPerceptor::boundaryStepGenerator(int x)
 {
   if (!theFieldBoundary.boundaryInImage.size())
-    return 0;
+    return -1;
 
   //-- NOTICE >> do not remove this if section, if you need so, edit the lower 'for' initial (i=begin ===> e<begin+1)
   if (x < theFieldBoundary.boundaryInImage.front().x)
@@ -77,27 +95,28 @@ int GoalPerceptor::boundaryStepGenerator(int x)
        */
       return (i->y-(i-1)->y)*(x-i->x)/(i->x-(i-1)->x)+i->y;
 
-  return 0;
+  return -1;
 }
 
-void GoalPerceptor::scanFieldBoundarySpots()
+void GoalPerceptor::scanFieldBoundarySpots(const int& height)
 {
   Spot candidateSpot(0, 0, 0);
   unsigned char Y=0, Cr=0, Cb=0;
-  float g;
 
+  int noGapX = 2;
   for (int x=0; x<theImage.width-1; x+=2)
   {
     int y=boundaryStepGenerator(x);
-    if (y>0 && y<theImage.height && isWhite(x, y))
+    if (y>-1 && y<theImage.height && isWhite(x, y))
     {
+      noGapX++;
       Y = theImage[y][x].y;
       Cb = theImage[y][x].cb;
       Cr = theImage[y][x].cr;
 
       int start, end, noGap=2;
       for (start=y; start>1; start-=2)
-        if (isInGrad(x, start, Y, Cr, Cb, g))
+        if (isInGrad(x, start, Y, Cr, Cb))
           noGap++;
         else if (noGap>1)
           noGap=0;
@@ -109,13 +128,13 @@ void GoalPerceptor::scanFieldBoundarySpots()
 
       noGap=2;
       for (end=y; end<theImage.height-1; end+=2)
-        if (isInGrad(x, end, Y, Cr, Cb, g))
+        if (isInGrad(x, end, Y, Cr, Cb))
           noGap++;
         else if (noGap>1)
           noGap=0;
         else
         {
-          end+=2;
+          end-=2;
           break;
         }
 
@@ -138,6 +157,10 @@ void GoalPerceptor::scanFieldBoundarySpots()
       candidateSpot.end = x+1;
       candidateSpot.width = candidateSpot.end - candidateSpot.start;
     }
+    else if (noGapX > 1)
+    {
+      noGapX = 0;
+    }
     else if (candidateSpot.width < 3)
     {
       candidateSpot = Spot(0, 0, 0);
@@ -145,12 +168,158 @@ void GoalPerceptor::scanFieldBoundarySpots()
     }
     else
     {
-      RECTANGLE("abol", candidateSpot.start, candidateSpot.top.y, candidateSpot.end, candidateSpot.base.y, 2, Drawings::ps_solid, ColorRGBA(10, 10, 100));
-      spots.push_back(candidateSpot);
+      RECTANGLE("module:GoalPerceptor:Candidates", candidateSpot.start, candidateSpot.top.y, candidateSpot.end, candidateSpot.base.y, 2, Drawings::ps_solid, ColorRGBA(10, 10, 100));
+      candidateSpot.mid.x = (candidateSpot.start+candidateSpot.end)/2;
+
+      if (candidateSpot.top.y <= height)
+//      if (candidateSpot.mid.y > height && candidateSpot.top.y < height) //-- The mid X should always be below horizon
+        spots.push_back(candidateSpot);
+
       candidateSpot = Spot(0, 0, 0);
       Y=Cr=Cb=0;
     }
   }
+}
+
+void GoalPerceptor::checkVerticalShape()
+{
+  for (std::list<Spot>::iterator s=spots.begin(); s!=spots.end(); )
+  {
+
+    std::vector<Point> pointSetLeft;
+    std::vector<Point> pointSetRight;
+
+    for (int y=s->top.y; y<s->base.y-3; y+=4)
+    {
+      const int x = s->mid.x;
+      int noGap;
+      unsigned char Y, Cr, Cb;
+
+      //-- Scanning Left
+      Y  = theImage[y][x].y;
+      Cb = theImage[y][x].cb;
+      Cr = theImage[y][x].cr;
+      noGap=2;
+      int xl;
+      for (xl=x; xl>1; xl-=2)
+        if (isInGrad(xl, y, Y, Cr, Cb))
+          noGap++;
+        else if (noGap>1)
+          noGap=0;
+        else
+        {
+          xl+=2;
+          break;
+        }
+      pointSetLeft.push_back(Point(xl, y));
+
+      Y  = theImage[y][x].y;
+      Cb = theImage[y][x].cb;
+      Cr = theImage[y][x].cr;
+      noGap=2;
+      int xr;
+      for (xr=x; xr<theImage.width-1; xr+=2)
+        if (isInGrad(xr, y, Y, Cr, Cb))
+          noGap++;
+        else if (noGap>1)
+          noGap=0;
+        else
+        {
+          xr-=2;
+          break;
+        }
+      pointSetRight.push_back(Point(xr, y));
+
+      LINE("module:GoalPerceptor:ShapeScans", xl, y, xr, y, 1, Drawings::ps_solid, ColorClasses::blue);
+    }
+
+    const float pearsonLeft = PearsonCorrelation(trimData(pointSetLeft));
+    const float pearsonRight = PearsonCorrelation(trimData(pointSetRight));
+    const float pearson = std::fabs(pearsonLeft+pearsonRight);
+
+    DRAWTEXT("module:GoalPerceptor:ShapeScans", s->end+20, -s->mid.y+11, 10, ColorClasses::orange, pearson);
+    DRAWTEXT("module:GoalPerceptor:ShapeScans", s->end+20, -s->mid.y+22, 10, ColorClasses::red, pearsonLeft);
+    DRAWTEXT("module:GoalPerceptor:ShapeScans", s->end+20, -s->mid.y+33, 10, ColorClasses::red, pearsonRight);
+
+    //-- Check to see if this shit is goal post
+    if (pearson > 10)
+      s = spots.erase(s);
+    else
+      s++;
+  }
+}
+
+std::vector<GoalPerceptor::Point> GoalPerceptor::trimData(const std::vector<Point>& input)
+{
+  ASSERT(false);
+  const int size = input.size();
+  if (!size) return input;
+  std::vector<Point> result = input;
+
+  //-- Calculating Mean
+  float meanX = 0;
+  for (auto& p : input)
+    meanX += p.x;
+  meanX /= (float)size;
+
+  //-- Calculating Variance
+  float variance = 0;
+  for (auto& p : input)
+    variance += (p.x - meanX) * (p.x - meanX);
+  variance /= (float)size;
+  variance = std::sqrt(variance);
+
+  //-- Calculating Median
+  std::sort(result.begin(), result.end());
+  const float median = (size % 2 == 0)?((result[size/2].x + result[size/2-1].x) / 2.f):(result[size/2].x);
+
+  //-- refining result
+  result.clear();
+  for (auto& p : input)
+    if (std::abs(p.x-median) <= (3.f/2.f) * variance)
+      result.push_back(p);
+    else
+      CROSS("abol", p.x, p.y, 2, 1, Drawings::ps_solid, ColorClasses::red);
+
+  return result;
+}
+
+float GoalPerceptor::PearsonCorrelation(const std::vector<Point>& input)
+{
+  ASSERT(false);
+  const float size = input.size();
+
+  float meanX = 0;
+  float meanY = 0;
+
+  for(auto& p : input)
+  {
+    meanX += p.x;
+    meanY += p.y;
+  }
+  meanX /= size;
+  meanY /= size;
+
+  float covarianceXY = 0;
+
+  float varianceX = 0;
+  float varianceY = 0;
+
+  for(auto& p : input)
+  {
+    covarianceXY += (p.x - meanX) * (p.y - meanY) / size;
+    varianceX    += (p.x - meanX) * (p.x - meanX) / size;
+    varianceY    += (p.y - meanY) * (p.y - meanY) / size;
+  }
+
+//  const float pearson = covarianceXY / std::sqrt(varianceX * varianceY);
+//  return pearson;
+
+  return varianceX;
+
+//  if (varianceX * varianceY == 0)
+//    return 1;
+//  return covarianceXY / std::sqrt(varianceX * varianceY);
 }
 
 void GoalPerceptor::findSpots(const int& height)
@@ -199,7 +368,7 @@ void GoalPerceptor::verticalColorScanDown()
     int width = i->width;
     int baseY = 0;
 
-    while(mid.x != lastMid.x)
+    while(mid.x != lastMid.x && i->start < mid.x && mid.x < i->end)
     {
       int noGaps = 2;
       for(baseY = mid.y+1; baseY < theImage.height-1; baseY++)
@@ -376,11 +545,10 @@ void GoalPerceptor::bottomCorrector()
   for (std::list<Spot>::iterator it=spots.begin(); it!=spots.end(); it++)
   {
     int noGaps = 2;
-    float grad=0;
     int botY;
     for(botY = it->base.y-5; botY < theImage.height-1; botY++)
     {
-      if(isInGrad(it->base.x, botY, grad)) {
+      if(isInGrad(it->base.x, botY)) {
         noGaps++;
       } else if(noGaps > 1) {
         noGaps = 0;
@@ -479,7 +647,7 @@ void GoalPerceptor::validate()
 
     //if all width of the goal posts are alike
     constantWidth = 1;
-    for(int w : i->widths){if(w > i->width * 2) constantWidth = 0;}
+//    for(int w : i->widths){if(w > i->width * 2) constantWidth = 0;} // [FIXME]
 
     //goal posts relation of height to width
     value = ((float)height) / i->width;
@@ -540,24 +708,25 @@ void GoalPerceptor::validate()
     if(expectedHeight < 0)
       expectedHeight *= 3;
 
-    i->validity = ((relationWidthToHeight + expectedWidth + expectedHeight + distanceToEachOther + matchingCrossbars) / 5.0f) * distanceEvaluation * minimalHeight * belowFieldBorder * constantWidth;
+    i->validity = ((relationWidthToHeight + expectedWidth + /*expectedHeight [FIXME] + */ distanceToEachOther + matchingCrossbars) / 5.0f) * distanceEvaluation * minimalHeight * belowFieldBorder * constantWidth;
 
     int low = 0;
     int high = 110;
     MODIFY("module:GoalPerceptor:low", low);
     MODIFY("module:GoalPerceptor:high", high);
 
-    if(i->validity < high && i->validity > low){
-      DRAWTEXT("module:GoalPerceptor:Validation", i->mid.x, i->mid.y - 55, 10, ColorClasses::black, "distanceEvaluation: " << distanceEvaluation);
-      DRAWTEXT("module:GoalPerceptor:Validation", i->mid.x, i->mid.y - 44, 10, ColorClasses::black, "minimalHeight: " << minimalHeight);
-      DRAWTEXT("module:GoalPerceptor:Validation", i->mid.x, i->mid.y - 33, 10, ColorClasses::black, "belowFieldBorder: " << belowFieldBorder);
-      DRAWTEXT("module:GoalPerceptor:Validation", i->mid.x, i->mid.y - 22, 10, ColorClasses::black, "constantWidth: " << constantWidth);
-      DRAWTEXT("module:GoalPerceptor:Validation", i->mid.x, i->mid.y - 11, 10, ColorClasses::black, "relationWidthToHeight: " << relationWidthToHeight);
-      DRAWTEXT("module:GoalPerceptor:Validation", i->mid.x, i->mid.y     , 10, ColorClasses::black, "expectedWidth: " << expectedWidth);
-      DRAWTEXT("module:GoalPerceptor:Validation", i->mid.x, i->mid.y + 11, 10, ColorClasses::black, "expectedHeight: " << expectedHeight);
-      DRAWTEXT("module:GoalPerceptor:Validation", i->mid.x, i->mid.y + 22, 10, ColorClasses::black, "distanceToEachOther: " << distanceToEachOther);
-      DRAWTEXT("module:GoalPerceptor:Validation", i->mid.x, i->mid.y + 33, 10, ColorClasses::black, "matchingCrossbars: " << matchingCrossbars);
-      DRAWTEXT("module:GoalPerceptor:Validation", i->mid.x, i->mid.y + 44, 10, ColorClasses::black, "validity: " << i->validity);
+//    if(i->validity < high && i->validity > low)
+    {
+      DRAWTEXT("module:GoalPerceptor:Validation", i->mid.x, -i->mid.y - 55, 10, ColorClasses::black, "distanceEvaluation: " << distanceEvaluation);
+      DRAWTEXT("module:GoalPerceptor:Validation", i->mid.x, -i->mid.y - 44, 10, ColorClasses::black, "minimalHeight: " << minimalHeight);
+      DRAWTEXT("module:GoalPerceptor:Validation", i->mid.x, -i->mid.y - 33, 10, ColorClasses::black, "belowFieldBorder: " << belowFieldBorder);
+      DRAWTEXT("module:GoalPerceptor:Validation", i->mid.x, -i->mid.y - 22, 10, ColorClasses::black, "constantWidth: " << constantWidth);
+      DRAWTEXT("module:GoalPerceptor:Validation", i->mid.x, -i->mid.y - 11, 10, ColorClasses::black, "relationWidthToHeight: " << relationWidthToHeight);
+      DRAWTEXT("module:GoalPerceptor:Validation", i->mid.x, -i->mid.y     , 10, ColorClasses::black, "expectedWidth: " << expectedWidth);
+      DRAWTEXT("module:GoalPerceptor:Validation", i->mid.x, -i->mid.y + 11, 10, ColorClasses::black, "expectedHeight: " << expectedHeight);
+      DRAWTEXT("module:GoalPerceptor:Validation", i->mid.x, -i->mid.y + 22, 10, ColorClasses::black, "distanceToEachOther: " << distanceToEachOther);
+      DRAWTEXT("module:GoalPerceptor:Validation", i->mid.x, -i->mid.y + 33, 10, ColorClasses::black, "matchingCrossbars: " << matchingCrossbars);
+      DRAWTEXT("module:GoalPerceptor:Validation", i->mid.x, -i->mid.y + 44, 10, ColorClasses::black, "validity: " << i->validity);
     }
   }
   spots.sort();
@@ -574,8 +743,7 @@ void GoalPerceptor::frameCheck()
       if (i==j)
         continue;
 
-
-      if (fabs((i->position - j->position).absFloat()) < MERGING_MARGIN &&
+      if (fabs((i->position - j->position).absFloat()) < mergingMargin &&
           i->position.absFloat() > j->position.absFloat())
       {
         CROSS("module:GoalPerceptor:removals", i->top.x, i->top.y, 5, 5, Drawings::bs_solid, ColorRGBA(10, 10, 100));
@@ -590,10 +758,39 @@ void GoalPerceptor::frameCheck()
     else
       i++;
   }
+
+  // [TODO] : This should not be here
+  for (std::list<Spot>::iterator i = spots.begin(); i!=spots.end(); )
+  {
+    bool shouldBeDeleted = false;
+
+    for (std::list<Spot>::iterator j=i; j!=spots.end(); j++)
+    {
+      if (i==j)
+        continue;
+
+      if (abs(i->mid.x - j->mid.x) < 5)
+      {
+        CROSS("module:GoalPerceptor:removals", i->mid.x, i->mid.y, 5, 5, Drawings::bs_solid, ColorRGBA(100, 10, 10));
+        shouldBeDeleted = true;
+        break;
+      }
+    }
+
+    if (shouldBeDeleted)
+      i=spots.erase(i);
+    else
+      i++;
+  }
 }
 
 void GoalPerceptor::posting(GoalPercept& percept)
 {
+  COMPLEX_DRAWING("module:GoalPerceptor:MidPoints", {
+    for (const Spot& s : spots)
+      CROSS("module:GoalPerceptor:MidPoints", s.mid.x, s.mid.y, 3, 3, Drawings::ps_solid, ColorClasses::orange);
+  });
+
   lastPosts.clear();
   if(!spots.empty())
   {
@@ -641,35 +838,34 @@ void GoalPerceptor::posting(GoalPercept& percept)
 
 inline bool GoalPerceptor::isWhite(const int& x, const int& y)
 {
-  return theColorReference.isWhite(&theImage[y][x]);
+  return theColorReference.isYellow(&theImage[y][x]);
 }
 
-inline bool GoalPerceptor::isInGrad(int px, int py, unsigned char& Y, unsigned char& Cr, unsigned char& Cb, float& diff2)
+inline bool GoalPerceptor::isInGrad(int px, int py, unsigned char& Y, unsigned char& Cr, unsigned char& Cb)
 {
-  if (!theColorReference.isWhite(&theImage[py][px]))
+  if (!theColorReference.isYellow(&theImage[py][px]))
     return false;
 
   const float y  = theImage[py][px].y;
   const float cr = theImage[py][px].cr;
   const float cb = theImage[py][px].cb;
 
-  diff2 = (y-Y)*(y-Y) + (cr-Cr)*(cr-Cr) + (cb-Cb)*(cb-Cb);
+  const float diff2 = (y-Y)*(y-Y) + (y-Y)*(y-Y) + (cr-Cr)*(cr-Cr) + (cb-Cb)*(cb-Cb);
 
   Y = y;
   Cr = cr;
   Cb = cb;
 
-  return (diff2 < COLOR_DIFFRENCE_VALUE);
+  return (diff2 < colorDifferenceValue);
 }
 
-inline bool GoalPerceptor::isInGrad(const int& px, const int& py, float& grad)
+inline bool GoalPerceptor::isInGrad(const int& px, const int& py)
 {
   const unsigned char y  = theImage[py][px].y;
   const unsigned char cb = theImage[py][px].cb;
   const unsigned char cr = theImage[py][px].cr;
 
   return (y>110 && abs(cb-127)<50 && abs(cr-127)<50);
-//  return !theColorReference.isGreen(&theImage[y][x]);
 }
 
 MAKE_MODULE(GoalPerceptor, Perception)
